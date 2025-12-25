@@ -5,25 +5,52 @@ namespace App\Domain\Crypto\Clients;
 use App\Domain\Crypto\Clients\Traits\ClientTools;
 use App\Domain\Crypto\Contracts\ExchangeClient;
 use App\Domain\Crypto\Support\Pair;
+use Illuminate\Support\Facades\Log;
 
-final class BybitClient extends BaseHttpClient implements ExchangeClient
+final class BybitClient implements ExchangeClient
 {
     use ClientTools;
 
-    public const EXCHANGE_CODE = 'bybit';
-    public const EXCHANGE_NAME = 'Bybit';
+    private const EXCHANGE_CODE = 'bybit';
+    private const EXCHANGE_NAME = 'Bybit';
 
     /**
-     * @return array
+     * @param HttpClientHelper $http
+     */
+    public function __construct(
+        private readonly HttpClientHelper $http
+    ) {
+    }
+
+    /**
+     * @return string
+     */
+    public function code(): string
+    {
+        return self::EXCHANGE_CODE;
+    }
+
+    /**
+     * @return string
+     */
+    public function name(): string
+    {
+        return self::EXCHANGE_NAME;
+    }
+
+    /**
+     * @return array|string[]
      */
     public function listPairs(): array
     {
-        $rows = $this->getArrayJsonPath(
+        $rows = $this->http->getArrayJsonPath(
+            $this->baseUrl(),
             '/v5/market/tickers',
             ['category' => 'spot'],
             'crypto.listPairs.failed',
             'crypto.listPairs.invalid_json',
-            'result.list'
+            'result.list',
+            $this->code()
         );
 
         if (!$rows) {
@@ -50,7 +77,7 @@ final class BybitClient extends BaseHttpClient implements ExchangeClient
             }
         }
 
-        return $this->finalizePairs($pairs);
+        return $this->http->finalizePairs($pairs);
     }
 
     /**
@@ -65,22 +92,22 @@ final class BybitClient extends BaseHttpClient implements ExchangeClient
             return [];
         }
 
-        return $this->safeArray('crypto.prices.failed_bulk', function () use ($need) {
-            $responce = $this->http($this->baseUrl())->get('/v5/market/tickers', ['category' => 'spot']);
+        return $this->http->safeArray(function () use ($need) {
+            $response = $this->http->client($this->baseUrl())->get('/v5/market/tickers', ['category' => 'spot']);
 
-            if (!$responce->ok()) {
-                \Log::warning('crypto.prices.failed_bulk', [
+            if (!$response->ok()) {
+                Log::warning('crypto.prices.failed_bulk', [
                     'exchange' => $this->code(),
-                    'status' => $responce->status(),
+                    'status' => $response->status(),
                 ]);
 
                 return [];
             }
 
-            $json = $responce->json();
+            $json = $response->json();
             $rows = $json['result']['list'] ?? null;
 
-            if (!$this->guardArrayJson($rows, 'crypto.prices.invalid_json')) {
+            if (!$this->http->guardArrayJson($rows, 'crypto.prices.invalid_json', $this->code())) {
                 return [];
             }
 
@@ -117,12 +144,12 @@ final class BybitClient extends BaseHttpClient implements ExchangeClient
             }
 
             return $out;
-        });
+        }, 'crypto.prices.failed_bulk', $this->code());
     }
 
     /**
      * @param array $pairs
-     * @return array
+     * @return array|array[]
      */
     public function quotesForPairs(array $pairs): array
     {
@@ -132,22 +159,22 @@ final class BybitClient extends BaseHttpClient implements ExchangeClient
             return [];
         }
 
-        return $this->safeArray('crypto.quotes.failed_bulk', function () use ($need) {
-            $responce = $this->http($this->baseUrl())->get('/v5/market/tickers', ['category' => 'spot']);
+        return $this->http->safeArray(function () use ($need) {
+            $response = $this->http->client($this->baseUrl())->get('/v5/market/tickers', ['category' => 'spot']);
 
-            if (!$responce->ok()) {
-                \Log::warning('crypto.quotes.failed_bulk', [
+            if (!$response->ok()) {
+                Log::warning('crypto.quotes.failed_bulk', [
                     'exchange' => $this->code(),
-                    'status' => $responce->status(),
+                    'status' => $response->status(),
                 ]);
 
                 return [];
             }
 
-            $json = $responce->json();
+            $json = $response->json();
             $rows = $json['result']['list'] ?? null;
 
-            if (!$this->guardArrayJson($rows, 'crypto.quotes.invalid_json')) {
+            if (!$this->http->guardArrayJson($rows, 'crypto.quotes.invalid_json', $this->code())) {
                 return [];
             }
 
@@ -186,13 +213,13 @@ final class BybitClient extends BaseHttpClient implements ExchangeClient
             }
 
             return $out;
-        });
+        }, 'crypto.quotes.failed_bulk', $this->code());
     }
 
     /**
      * @return string
      */
-    protected function baseUrl(): string
+    private function baseUrl(): string
     {
         return (string) config('crypto.exchanges.bybit.base_url');
     }

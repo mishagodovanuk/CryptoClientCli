@@ -4,29 +4,62 @@ namespace App\Domain\Crypto\Clients;
 
 use App\Domain\Crypto\Clients\Traits\ClientTools;
 use App\Domain\Crypto\Contracts\ExchangeClient;
+use Illuminate\Support\Facades\Log;
 
-final class PoloniexClient extends BaseHttpClient implements ExchangeClient
+final class PoloniexClient implements ExchangeClient
 {
     use ClientTools;
 
-    const EXCHANGE_CODE = 'poloniex';
-    const EXCHANGE_NAME = 'Poloniex';
+    private const EXCHANGE_CODE = 'poloniex';
+    private const EXCHANGE_NAME = 'Poloniex';
 
     /**
-     * @return array
+     * @param HttpClientHelper $http
+     */
+    public function __construct(
+        private readonly HttpClientHelper $http
+    ) {
+    }
+
+    /**
+     * @return string
+     */
+    public function code(): string
+    {
+        return self::EXCHANGE_CODE;
+    }
+
+    /**
+     * @return string
+     */
+    public function name(): string
+    {
+        return self::EXCHANGE_NAME;
+    }
+
+    /**
+     * @return string
+     */
+    private function baseUrl(): string
+    {
+        return (string) config('crypto.exchanges.poloniex.base_url');
+    }
+
+    /**
+     * @return array|string[]
      */
     public function listPairs(): array
     {
-        return $this->safeArray('crypto.listPairs.failed', function () {
-            $responce = $this->http($this->baseUrl())->get('/markets/ticker24h');
+        return $this->http->safeArray(function () {
+            $response = $this->http->client($this->baseUrl())->get('/markets/ticker24h');
 
-            if (!$this->guardOk($responce, 'crypto.listPairs.failed')) {
+            if (!$this->http->guardOk($response, 'crypto.listPairs.failed', $this->code())) {
                 return [];
             }
 
-            $data = $responce->json();
+            $data = $response->json();
 
-            if (!$this->guardArrayJson($data, 'crypto.listPairs.invalid_json')) {
+            if (!$this->http->guardArrayJson($data, 'crypto.listPairs.invalid_json', $this->code())) {
                 return [];
             }
 
@@ -50,13 +83,13 @@ final class PoloniexClient extends BaseHttpClient implements ExchangeClient
                 }
             }
 
-            return $this->finalizePairs($pairs);
-        });
+            return $this->http->finalizePairs($pairs);
+        }, 'crypto.listPairs.failed', $this->code());
     }
 
     /**
      * @param array $pairs
-     * @return array
+     * @return array|float[]
      */
     public function pricesForPairs(array $pairs): array
     {
@@ -66,21 +99,21 @@ final class PoloniexClient extends BaseHttpClient implements ExchangeClient
             return [];
         }
 
-        return $this->safeArray('crypto.prices.failed_bulk', function () use ($need) {
-            $responce = $this->http($this->baseUrl())->get('/markets/ticker24h');
+        return $this->http->safeArray(function () use ($need) {
+            $response = $this->http->client($this->baseUrl())->get('/markets/ticker24h');
 
-            if (!$responce->ok()) {
-                \Log::warning('crypto.prices.failed_bulk', [
+            if (!$response->ok()) {
+                Log::warning('crypto.prices.failed_bulk', [
                     'exchange' => $this->code(),
-                    'status' => $responce->status(),
+                    'status' => $response->status(),
                 ]);
 
                 return [];
             }
 
-            $data = $responce->json();
+            $data = $response->json();
 
-            if (!$this->guardArrayJson($data, 'crypto.prices.invalid_json')) {
+            if (!$this->http->guardArrayJson($data, 'crypto.prices.invalid_json', $this->code())) {
                 return [];
             }
 
@@ -117,12 +150,12 @@ final class PoloniexClient extends BaseHttpClient implements ExchangeClient
             }
 
             return $out;
-        });
+        }, 'crypto.prices.failed_bulk', $this->code());
     }
 
     /**
      * @param array $pairs
-     * @return array
+     * @return array|array[]
      */
     public function quotesForPairs(array $pairs): array
     {
@@ -132,21 +165,21 @@ final class PoloniexClient extends BaseHttpClient implements ExchangeClient
             return [];
         }
 
-        return $this->safeArray('crypto.quotes.failed_bulk', function () use ($need) {
-            $responce = $this->http($this->baseUrl())->get('/markets/ticker24h');
+        return $this->http->safeArray(function () use ($need) {
+            $response = $this->http->client($this->baseUrl())->get('/markets/ticker24h');
 
-            if (!$responce->ok()) {
-                \Log::warning('crypto.quotes.failed_bulk', [
+            if (!$response->ok()) {
+                Log::warning('crypto.quotes.failed_bulk', [
                     'exchange' => $this->code(),
-                    'status' => $responce->status(),
+                    'status' => $response->status(),
                 ]);
 
                 return [];
             }
 
-            $data = $responce->json();
+            $data = $response->json();
 
-            if (!$this->guardArrayJson($data, 'crypto.quotes.invalid_json')) {
+            if (!$this->http->guardArrayJson($data, 'crypto.quotes.invalid_json', $this->code())) {
                 return [];
             }
 
@@ -178,7 +211,7 @@ final class PoloniexClient extends BaseHttpClient implements ExchangeClient
             }
 
             return $out;
-        });
+        }, 'crypto.quotes.failed_bulk', $this->code());
     }
 
     /**
@@ -196,13 +229,5 @@ final class PoloniexClient extends BaseHttpClient implements ExchangeClient
         }
 
         return null;
-    }
-
-    /**
-     * @return string
-     */
-    protected function baseUrl(): string
-    {
-        return (string) config('crypto.exchanges.poloniex.base_url');
     }
 }

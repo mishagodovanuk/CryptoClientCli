@@ -5,29 +5,62 @@ namespace App\Domain\Crypto\Clients;
 use App\Domain\Crypto\Clients\Traits\ClientTools;
 use App\Domain\Crypto\Contracts\ExchangeClient;
 use App\Domain\Crypto\Support\Pair;
+use Illuminate\Support\Facades\Log;
 
-final class WhitebitClient extends BaseHttpClient implements ExchangeClient
+final class WhitebitClient implements ExchangeClient
 {
     use ClientTools;
 
-    public const EXCHANGE_CODE = 'whitebit';
-    public const EXCHANGE_NAME = 'WhiteBIT';
+    private const EXCHANGE_CODE = 'whitebit';
+    private const EXCHANGE_NAME = 'WhiteBIT';
 
     /**
-     * @return array
+     * @param HttpClientHelper $http
+     */
+    public function __construct(
+        private readonly HttpClientHelper $http
+    ) {
+    }
+
+    /**
+     * @return string
+     */
+    public function code(): string
+    {
+        return self::EXCHANGE_CODE;
+    }
+
+    /**
+     * @return string
+     */
+    public function name(): string
+    {
+        return self::EXCHANGE_NAME;
+    }
+
+    /**
+     * @return string
+     */
+    private function baseUrl(): string
+    {
+        return (string) config('crypto.exchanges.whitebit.base_url');
+    }
+
+    /**
+     * @return array|string[]
      */
     public function listPairs(): array
     {
-        return $this->safeArray('crypto.listPairs.failed', function () {
-            $responce = $this->http($this->baseUrl())->get('/api/v4/public/markets');
+        return $this->http->safeArray(function () {
+            $response = $this->http->client($this->baseUrl())->get('/api/v4/public/markets');
 
-            if (!$this->guardOk($responce, 'crypto.listPairs.failed')) {
+            if (!$this->http->guardOk($response, 'crypto.listPairs.failed', $this->code())) {
                 return [];
             }
 
-            $rows = $responce->json();
+            $rows = $response->json();
 
-            if (!$this->guardArrayJson($rows, 'crypto.listPairs.invalid_json')) {
+            if (!$this->http->guardArrayJson($rows, 'crypto.listPairs.invalid_json', $this->code())) {
                 return [];
             }
 
@@ -57,13 +90,13 @@ final class WhitebitClient extends BaseHttpClient implements ExchangeClient
                 }
             }
 
-            return $this->finalizePairs($pairs);
-        });
+            return $this->http->finalizePairs($pairs);
+        }, 'crypto.listPairs.failed', $this->code());
     }
 
     /**
      * @param array $pairs
-     * @return array
+     * @return array|float[]
      */
     public function pricesForPairs(array $pairs): array
     {
@@ -73,11 +106,11 @@ final class WhitebitClient extends BaseHttpClient implements ExchangeClient
             return [];
         }
 
-        return $this->safeArray('crypto.prices.failed_bulk', function () use ($need) {
-            $r = $this->http($this->baseUrl())->get('/api/v4/public/ticker');
+        return $this->http->safeArray(function () use ($need) {
+            $r = $this->http->client($this->baseUrl())->get('/api/v4/public/ticker');
 
             if (!$r->ok()) {
-                \Log::warning('crypto.prices.failed_bulk', [
+                Log::warning('crypto.prices.failed_bulk', [
                     'exchange' => $this->code(),
                     'status' => $r->status(),
                 ]);
@@ -87,7 +120,7 @@ final class WhitebitClient extends BaseHttpClient implements ExchangeClient
 
             $json = $r->json();
 
-            if (!$this->guardArrayJson($json, 'crypto.prices.invalid_json')) {
+            if (!$this->http->guardArrayJson($json, 'crypto.prices.invalid_json', $this->code())) {
                 return [];
             }
 
@@ -118,12 +151,12 @@ final class WhitebitClient extends BaseHttpClient implements ExchangeClient
             }
 
             return $out;
-        });
+        }, 'crypto.prices.failed_bulk', $this->code());
     }
 
     /**
      * @param array $pairs
-     * @return array
+     * @return array|array[]
      */
     public function quotesForPairs(array $pairs): array
     {
@@ -143,21 +176,21 @@ final class WhitebitClient extends BaseHttpClient implements ExchangeClient
             }
 
             try {
-                $responce = $this->http($this->baseUrl())->get('/api/v4/public/orderbook/' . $market, [
+                $response = $this->http->client($this->baseUrl())->get('/api/v4/public/orderbook/' . $market, [
                     'limit' => 1,
                 ]);
 
-                if (!$responce->ok()) {
-                    \Log::debug('crypto.quotes.whitebit.orderbook_failed', [
+                if (!$response->ok()) {
+                    Log::debug('crypto.quotes.whitebit.orderbook_failed', [
                         'exchange' => $this->code(),
                         'pair' => $pair,
-                        'status' => $responce->status(),
+                        'status' => $response->status(),
                     ]);
 
                     continue;
                 }
 
-                $json = $responce->json();
+                $json = $response->json();
 
                 if (!is_array($json)) {
                     continue;
@@ -173,7 +206,7 @@ final class WhitebitClient extends BaseHttpClient implements ExchangeClient
                     $out[$pair] = ['bid' => $bid, 'ask' => $ask];
                 }
             } catch (\Throwable $e) {
-                \Log::debug('crypto.quotes.whitebit.orderbook_failed', [
+                Log::debug('crypto.quotes.whitebit.orderbook_failed', [
                     'exchange' => $this->code(),
                     'pair' => $pair,
                     'error' => $e->getMessage(),
@@ -203,13 +236,5 @@ final class WhitebitClient extends BaseHttpClient implements ExchangeClient
         }
 
         return $base . '_' . $quote;
-    }
-
-    /**
-     * @return string
-     */
-    protected function baseUrl(): string
-    {
-        return (string) config('crypto.exchanges.whitebit.base_url');
     }
 }

@@ -4,31 +4,64 @@ namespace App\Domain\Crypto\Clients;
 
 use App\Domain\Crypto\Clients\Traits\ClientTools;
 use App\Domain\Crypto\Contracts\ExchangeClient;
+use App\Domain\Crypto\Support\CacheKeys;
 use App\Domain\Crypto\Support\Pair;
 use Illuminate\Support\Facades\Cache;
 
-final class JbexClient extends BaseHttpClient implements ExchangeClient
+final class JbexClient implements ExchangeClient
 {
     use ClientTools;
 
-    const EXCHANGE_CODE = 'jbex';
-    const EXCHANGE_NAME = 'jbex';
+    private const EXCHANGE_CODE = 'jbex';
+    private const EXCHANGE_NAME = 'jbex';
 
     /**
-     * @return array
+     * @param HttpClientHelper $http
+     */
+    public function __construct(
+        private readonly HttpClientHelper $http
+    ) {
+    }
+
+    /**
+     * @return string
+     */
+    public function code(): string
+    {
+        return self::EXCHANGE_CODE;
+    }
+
+    /**
+     * @return string
+     */
+    public function name(): string
+    {
+        return self::EXCHANGE_NAME;
+    }
+
+    /**
+     * @return string
+     */
+    private function baseUrl(): string
+    {
+        return (string) config('crypto.exchanges.jbex.base_url');
+    }
+
+    /**
+     * @return array|string[]
      */
     public function listPairs(): array
     {
         $ttl = (int) config('crypto.cache.pairs_ttl');
 
-        return Cache::remember('crypto:pairs:jbex', $ttl, function () {
-            $responce = $this->http($this->baseUrl())->get('/v1/spot/public/ticker');
+        return Cache::remember(CacheKeys::pairs('jbex'), $ttl, function () {
+            $response = $this->http->client($this->baseUrl())->get('/v1/spot/public/ticker');
 
-            if (!$responce->ok()) {
+            if (!$response->ok()) {
                 return [];
             }
 
-            $json = $responce->json();
+            $json = $response->json();
             $rows = $json['data'] ?? $json;
 
             if (!is_array($rows)) {
@@ -65,14 +98,14 @@ final class JbexClient extends BaseHttpClient implements ExchangeClient
 
         $ttl = (int) config('crypto.cache.prices_ttl');
 
-        $all = Cache::remember('crypto:prices:jbex', $ttl, function () {
-            $responce = $this->http($this->baseUrl())->get('/v1/spot/public/ticker/price');
+        $all = Cache::remember(CacheKeys::prices('jbex'), $ttl, function () {
+            $response = $this->http->client($this->baseUrl())->get('/v1/spot/public/ticker/price');
 
-            if (!$responce->ok()) {
+            if (!$response->ok()) {
                 return [];
             }
 
-            $json = $responce->json();
+            $json = $response->json();
             $rows = $json['data'] ?? $json;
 
             if (!is_array($rows)) {
@@ -114,13 +147,5 @@ final class JbexClient extends BaseHttpClient implements ExchangeClient
     {
         // Simple mock because Jbex is not active.
         return [];
-    }
-
-    /**
-     * @return string
-     */
-    protected function baseUrl(): string
-    {
-        return (string) config('crypto.exchanges.jbex.base_url');
     }
 }

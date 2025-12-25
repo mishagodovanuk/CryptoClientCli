@@ -5,15 +5,43 @@ namespace App\Domain\Crypto\Support;
 final class Pair
 {
     /**
+     * Normalize trading pair string to standard format (BASE/QUOTE).
+     *
+     * Handles various formats:
+     * - BTC/USDT -> BTC/USDT
+     * - BTC-USDT -> BTC/USDT
+     * - BTC_USDT -> BTC/USDT
+     * - BTCUSDT -> BTC/USDT
+     *
      * @param string $pair
      * @return string
      */
     public static function normalize(string $pair): string
     {
-        $pair = trim($pair);
-        $pair = str_replace(['-', '_'], '/', $pair);
+        $s = strtoupper(trim($pair));
+        $s = str_replace(['-', '_', ' '], '/', $s);
 
-        return strtoupper($pair);
+        if (str_contains($s, '/')) {
+            $parts = array_values(array_filter(explode('/', $s)));
+
+            if (count($parts) >= 2) {
+                return $parts[0] . '/' . $parts[1];
+            }
+
+            return $s;
+        }
+
+        $quotes = config('crypto.quote_currencies', []);
+
+        foreach ($quotes as $q) {
+            if (str_ends_with($s, $q) && strlen($s) > strlen($q)) {
+                $base = substr($s, 0, -strlen($q));
+
+                return $base . '/' . $q;
+            }
+        }
+
+        return $s;
     }
 
     /**
@@ -37,7 +65,7 @@ final class Pair
             return self::normalize($symbol);
         }
 
-        $quotes = ['USDT','USDC','FDUSD','TUSD','BUSD','BTC','ETH','EUR','GBP','JPY','TRY','BRL','UAH'];
+        $quotes = config('crypto.quote_currencies', []);
 
         foreach ($quotes as $q) {
             if (str_ends_with($symbol, $q) && strlen($symbol) > strlen($q)) {

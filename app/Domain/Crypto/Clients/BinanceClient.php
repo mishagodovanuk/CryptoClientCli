@@ -7,28 +7,52 @@ use App\Domain\Crypto\Contracts\ExchangeClient;
 use App\Domain\Crypto\Support\Pair;
 use Illuminate\Http\Client\ConnectionException;
 
-final class BinanceClient extends BaseHttpClient implements ExchangeClient
+final class BinanceClient implements ExchangeClient
 {
     use ClientTools;
 
-    public const EXCHANGE_CODE = 'binance';
-    public const EXCHANGE_NAME = 'Binance';
+    private const EXCHANGE_CODE = 'binance';
+    private const EXCHANGE_NAME = 'Binance';
 
     /**
-     * @return array
+     * @param HttpClientHelper $http
+     */
+    public function __construct(
+        private readonly HttpClientHelper $http
+    ) {
+    }
+
+    /**
+     * @return string
+     */
+    public function code(): string
+    {
+        return self::EXCHANGE_CODE;
+    }
+
+    /**
+     * @return string
+     */
+    public function name(): string
+    {
+        return self::EXCHANGE_NAME;
+    }
+
+    /**
+     * @return array|string[]
      */
     public function listPairs(): array
     {
-        return $this->safeArray('crypto.listPairs.failed', function () {
-            $responce = $this->http($this->baseUrl())->get('/api/v3/ticker/price');
+        return $this->http->safeArray(function () {
+            $response = $this->http->client($this->baseUrl())->get('/api/v3/ticker/price');
 
-            if (!$this->guardOk($responce, 'crypto.listPairs.failed')) {
+            if (!$this->http->guardOk($response, 'crypto.listPairs.failed', $this->code())) {
                 return [];
             }
 
-            $data = $responce->json();
+            $data = $response->json();
 
-            if (!$this->guardArrayJson($data, 'crypto.listPairs.invalid_json')) {
+            if (!$this->http->guardArrayJson($data, 'crypto.listPairs.invalid_json', $this->code())) {
                 return [];
             }
 
@@ -52,8 +76,8 @@ final class BinanceClient extends BaseHttpClient implements ExchangeClient
                 }
             }
 
-            return $this->finalizePairs($pairs);
-        });
+            return $this->http->finalizePairs($pairs);
+        }, 'crypto.listPairs.failed', $this->code());
     }
 
     /**
@@ -69,14 +93,14 @@ final class BinanceClient extends BaseHttpClient implements ExchangeClient
 
         $ttl = (int) config('crypto.cache.prices_ttl');
 
-        $all = $this->remember('crypto:prices:binance', $ttl, function () {
-            $responce = $this->http($this->baseUrl())->get('/api/v3/ticker/price');
+        $all = $this->remember(\App\Domain\Crypto\Support\CacheKeys::prices('binance'), $ttl, function () {
+            $response = $this->http->client($this->baseUrl())->get('/api/v3/ticker/price');
 
-            if (!$responce->ok()) {
+            if (!$response->ok()) {
                 return [];
             }
 
-            $rows = $responce->json();
+            $rows = $response->json();
 
             if (!is_array($rows)) {
                 return [];
@@ -115,11 +139,13 @@ final class BinanceClient extends BaseHttpClient implements ExchangeClient
             return [];
         }
 
-        $rows = $this->getArrayJson(
+        $rows = $this->http->getArrayJson(
+            $this->baseUrl(),
             '/api/v3/ticker/bookTicker',
             [],
             'crypto.quotes.failed_bulk',
-            'crypto.quotes.invalid_json'
+            'crypto.quotes.invalid_json',
+            $this->code()
         );
 
         if (!$rows) {
@@ -157,20 +183,12 @@ final class BinanceClient extends BaseHttpClient implements ExchangeClient
     }
 
     /**
-     * @return string
-     */
-    protected function baseUrl(): string
-    {
-        return (string) config('crypto.exchanges.binance.base_url');
-    }
-
-    /**
      * @param string $symbol
      * @return string|null
      */
     private function symbolToPair(string $symbol): ?string
     {
-        $quotes = ['USDT','USDC','BUSD','FDUSD','BTC','ETH','BNB','EUR','TRY','BRL','UAH','GBP','JPY','AUD','RUB'];
+        $quotes = config('crypto.quote_currencies', []);
 
         foreach ($quotes as $q) {
             if (str_ends_with($symbol, $q) && strlen($symbol) > strlen($q)) {
@@ -181,5 +199,13 @@ final class BinanceClient extends BaseHttpClient implements ExchangeClient
         }
 
         return null;
+    }
+
+    /**
+     * @return string
+     */
+    private function baseUrl(): string
+    {
+        return (string) config('crypto.exchanges.binance.base_url');
     }
 }

@@ -3,30 +3,38 @@
 namespace App\Domain\Crypto\Services;
 
 use App\Domain\Crypto\Contracts\ExchangeClient;
+use App\Domain\Crypto\Exceptions\InsufficientQuotesException;
+use App\Domain\Crypto\Exceptions\PairNotFoundException;
+use App\Domain\Crypto\Support\CacheKeys;
+use App\Domain\Crypto\Support\Constants;
+use App\Domain\Crypto\ValueObjects\ArbitrageOpportunity;
+use App\Domain\Crypto\ValueObjects\BestRateResult;
+use App\Domain\Crypto\ValueObjects\ExchangeQuote;
+use App\Domain\Crypto\ValueObjects\Quote;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 
 final class CryptoAggregator
 {
     /** @var ExchangeClient[] */
     private array $clients;
 
-    /**
-     * @param iterable $clients
-     */
     public function __construct(iterable $clients)
     {
         $this->clients = is_array($clients) ? $clients : iterator_to_array($clients);
     }
 
     /**
-     * @return array
+     * Get common trading pairs available on all exchanges.
+     *
+     * @return array<string>
      */
     public function commonPairs(): array
     {
         $ttl = (int) config('crypto.cache.pairs_ttl');
         $requireAll = (bool) config('crypto.require_all_exchanges', true);
 
-        return Cache::remember('crypto:commonPairs', $ttl, function () use ($requireAll) {
+        return Cache::remember(CacheKeys::commonPairs(), $ttl, function () use ($requireAll) {
             $sets = [];
             $available = [];
 
@@ -38,14 +46,14 @@ final class CryptoAggregator
                         $sets[] = $pairs;
                         $available[] = $client->code();
                     } else {
-                        \Log::warning('crypto.exchange.no_pairs', ['exchange' => $client->code()]);
+                        Log::warning('crypto.exchange.no_pairs', ['exchange' => $client->code()]);
 
                         if ($requireAll) {
                             return [];
                         }
                     }
                 } catch (\Throwable $e) {
-                    \Log::warning('crypto.exchange.listPairs_failed', [
+                    Log::warning('crypto.exchange.listPairs_failed', [
                         'exchange' => $client->code(),
                         'error' => $e->getMessage(),
                     ]);
@@ -56,8 +64,8 @@ final class CryptoAggregator
                 }
             }
 
-            if (count($sets) < 2) {
-                \Log::warning('crypto.commonPairs.not_enough_exchanges', [
+            if (count($sets) < Constants::MIN_EXCHANGES_REQUIRED) {
+                Log::warning('crypto.commonPairs.not_enough_exchanges', [
                     'available' => $available,
                     'count' => count($sets),
                 ]);
@@ -73,7 +81,7 @@ final class CryptoAggregator
 
             sort($common);
 
-            \Log::info('crypto.commonPairs.ready', [
+            Log::info('crypto.commonPairs.ready', [
                 'pairs_count' => count($common),
                 'available_exchanges' => $available,
             ]);
@@ -83,17 +91,21 @@ final class CryptoAggregator
     }
 
     /**
+     * Get best buy and sell rates for a trading pair.
+     *
      * @param string $pair
-     * @return array
+     * @return BestRateResult
+     * @throws PairNotFoundException
+     * @throws InsufficientQuotesException
      */
-    public function bestRate(string $pair): array
+    public function bestRate(string $pair): BestRateResult
     {
         $pair = strtoupper(trim($pair));
 
         $common = $this->commonPairs();
 
         if (!in_array($pair, $common, true)) {
-            return ['error' => 'PAIR_NOT_COMMON', 'pair' => $pair];
+            throw PairNotFoundException::forPair($pair);
         }
 
         $quotes = [];
@@ -103,18 +115,18 @@ final class CryptoAggregator
             try {
                 $exchangeNames[$client->code()] = $client->name();
 
-                $quote = $client->quotesForPairs([$pair]);
+                $quoteData = $client->quotesForPairs([$pair]);
 
-                if (isset($quote[$pair]['bid'], $quote[$pair]['ask'])) {
-                    $bid = (float) $quote[$pair]['bid'];
-                    $ask = (float) $quote[$pair]['ask'];
+                if (isset($quoteData[$pair]['bid'], $quoteData[$pair]['ask'])) {
+                    $bid = (float) $quoteData[$pair]['bid'];
+                    $ask = (float) $quoteData[$pair]['ask'];
 
                     if ($bid > 0 && $ask > 0) {
-                        $quotes[$client->code()] = ['bid' => $bid, 'ask' => $ask];
+                        $quotes[] = new Quote($bid, $ask, $pair, $client->code());
                     }
                 }
             } catch (\Throwable $e) {
-                \Log::warning('crypto.prices.failed_bulk', [
+                Log::warning('crypto.prices.failed_bulk', [
                     'exchange' => $client->code(),
                     'error' => $e->getMessage(),
                 ]);
@@ -123,55 +135,41 @@ final class CryptoAggregator
             }
         }
 
-        if (count($quotes) < 2) {
-            return ['error' => 'NOT_ENOUGH_QUOTES', 'pair' => $pair];
+        if (count($quotes) < Constants::MIN_QUOTES_REQUIRED) {
+            throw InsufficientQuotesException::forPair($pair, Constants::MIN_QUOTES_REQUIRED, count($quotes));
         }
 
         $minAsk = null;
-        $minAskEx = null;
-
+        $minAskQuote = null;
         $maxBid = null;
-        $maxBidEx = null;
+        $maxBidQuote = null;
 
-        foreach ($quotes as $ex => $q) {
-            $bid = (float) $q['bid'];
-            $ask = (float) $q['ask'];
-
-            if ($minAsk === null || $ask < $minAsk) {
-                $minAsk = $ask;
-                $minAskEx = $ex;
+        foreach ($quotes as $quote) {
+            if ($minAsk === null || $quote->ask < $minAsk) {
+                $minAsk = $quote->ask;
+                $minAskQuote = $quote;
             }
 
-            if ($maxBid === null || $bid > $maxBid) {
-                $maxBid = $bid;
-                $maxBidEx = $ex;
+            if ($maxBid === null || $quote->bid > $maxBid) {
+                $maxBid = $quote->bid;
+                $maxBidQuote = $quote;
             }
         }
 
-        return [
-            'pair' => $pair,
-            'buy' => [
-                'exchange' => $exchangeNames[$minAskEx] ?? $minAskEx,
-                'price' => $minAsk,
-            ],
-            'sell' => [
-                'exchange' => $exchangeNames[$maxBidEx] ?? $maxBidEx,
-                'price' => $maxBid,
-            ],
-            'quotes' => collect($quotes)->map(function ($q, $ex) use ($exchangeNames) {
-                return [
-                    'exchange' => $exchangeNames[$ex] ?? $ex,
-                    'bid' => (float) $q['bid'],
-                    'ask' => (float) $q['ask'],
-                ];
-            })->values()->all(),
-        ];
+        return new BestRateResult(
+            $pair,
+            new ExchangeQuote($exchangeNames[$minAskQuote->exchange] ?? $minAskQuote->exchange, $minAsk),
+            new ExchangeQuote($exchangeNames[$maxBidQuote->exchange] ?? $maxBidQuote->exchange, $maxBid),
+            $quotes
+        );
     }
 
     /**
+     * Find arbitrage opportunities across exchanges.
+     *
      * @param int $limit
      * @param float $minProfit
-     * @return array
+     * @return ArbitrageOpportunity[]
      */
     public function arbitrage(int $limit = 30, float $minProfit = 0.0): array
     {
@@ -187,37 +185,22 @@ final class CryptoAggregator
         foreach ($this->clients as $client) {
             try {
                 $exchangeNames[$client->code()] = $client->name();
-
-                if ($client->code() === 'whitebit') {
-                    $prices = $client->pricesForPairs($pairs);
-                    $map = [];
-
-                    foreach ($prices as $pair => $price) {
-                        $p = (float) $price;
-
-                        if ($p > 0) {
-                            $map[$pair] = ['bid' => $p, 'ask' => $p];
-                        }
-                    }
-
-                    $quoteMaps[$client->code()] = $map;
-                    continue;
-                }
-
                 $quoteMaps[$client->code()] = $client->quotesForPairs($pairs);
             } catch (\Throwable $e) {
+                Log::warning('crypto.arbitrage.client_failed', [
+                    'exchange' => $client->code(),
+                    'error' => $e->getMessage(),
+                ]);
                 $quoteMaps[$client->code()] = [];
             }
         }
 
         $cap = (float) config('crypto.arbitrage.max_profit_percent', 50.0);
-
-        $out = [];
+        $opportunities = [];
 
         foreach ($pairs as $pair) {
             $minAsk = null;
             $minAskEx = null;
-
             $maxBid = null;
             $maxBidEx = null;
 
@@ -258,7 +241,7 @@ final class CryptoAggregator
 
             $profit = (($maxBid - $minAsk) / $minAsk) * 100.0;
 
-            if ($profit + 1e-12 < $minProfit) {
+            if ($profit + Constants::FLOATING_POINT_EPSILON < $minProfit) {
                 continue;
             }
 
@@ -266,18 +249,18 @@ final class CryptoAggregator
                 continue;
             }
 
-            $out[] = [
-                'pair' => $pair,
-                'buy_exchange' => $exchangeNames[$minAskEx] ?? $minAskEx,
-                'buy_price' => $minAsk,
-                'sell_exchange' => $exchangeNames[$maxBidEx] ?? $maxBidEx,
-                'sell_price' => $maxBid,
-                'profit_percent' => $profit,
-            ];
+            $opportunities[] = new ArbitrageOpportunity(
+                $pair,
+                $exchangeNames[$minAskEx] ?? $minAskEx,
+                $minAsk,
+                $exchangeNames[$maxBidEx] ?? $maxBidEx,
+                $maxBid,
+                $profit
+            );
         }
 
-        usort($out, fn($a, $b) => $b['profit_percent'] <=> $a['profit_percent']);
+        usort($opportunities, fn($a, $b) => $b->profitPercent <=> $a->profitPercent);
 
-        return array_slice($out, 0, max(1, $limit));
+        return array_slice($opportunities, 0, max(1, $limit));
     }
 }

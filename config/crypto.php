@@ -20,6 +20,12 @@ return [
         'retry_sleep_ms' => 200,
     ],
 
+    'quote_currencies' => [
+        'USDT', 'USDC', 'FDUSD', 'TUSD', 'BUSD',
+        'BTC', 'ETH', 'BNB',
+        'EUR', 'GBP', 'JPY', 'TRY', 'BRL', 'UAH', 'AUD', 'RUB',
+    ],
+
     'exchanges' => [
         'binance' => [
             'enabled' => true,

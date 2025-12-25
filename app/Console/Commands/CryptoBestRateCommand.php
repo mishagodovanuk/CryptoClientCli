@@ -2,99 +2,90 @@
 
 namespace App\Console\Commands;
 
+use App\Domain\Crypto\Exceptions\InsufficientQuotesException;
+use App\Domain\Crypto\Exceptions\PairNotFoundException;
 use App\Domain\Crypto\Services\CryptoAggregator;
+use App\Domain\Crypto\Support\Pair;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Validator;
 
 class CryptoBestRateCommand extends Command
 {
     /**
-     * The name and signature of the console command.
-     *
      * @var string
      */
-    protected $signature = 'app:crypto-best-rate-command {pair : Example BTC/USDT}';
+    protected $signature = 'app:crypto-best-rate-command {pair : Trading pair (e.g., BTC/USDT, BTCUSDT)}';
 
     /**
-     * The console command description.
-     *
      * @var string
      */
     protected $description = 'Show min and max price for selected pair across all exchanges';
 
     /**
-     * Execute the console command.
+     * @param CryptoAggregator $aggregator
+     * @return int
      */
     public function handle(CryptoAggregator $aggregator): int
     {
         $raw = (string) $this->argument('pair');
-        $pair = $this->normalizePair($raw);
-        $result = $aggregator->bestRate($pair);
 
-        if (isset($result['error'])) {
-            $this->error("Error: {$result['error']} ({$result['pair']})");
-            $this->line('Examples: BTC/USDT, ETH/USDT, SOL/USDT');
+        $validator = Validator::make(['pair' => $raw], [
+            'pair' => ['required', 'string', 'min:3', 'max:20'],
+        ]);
+
+        if ($validator->fails()) {
+            $this->error('Invalid pair format');
+            $this->line('Examples: BTC/USDT, ETH/USDT, BTCUSDT');
 
             return self::FAILURE;
         }
 
-        $this->info("PAIR: {$result['pair']}");
+        $pair = Pair::normalize($raw);
 
-        $this->table(
-            ['TYPE', 'EXCHANGE', 'PRICE'],
-            [
-                ['BUY (MIN ASK)', $result['buy']['exchange'], $result['buy']['price']],
-                ['SELL (MAX BID)', $result['sell']['exchange'], $result['sell']['price']],
-            ]
-        );
+        try {
+            $result = $aggregator->bestRate($pair);
+            $data = $result->toArray();
 
-        if (!empty($result['quotes'])) {
-            $this->line('All quotes:');
+            $this->info("PAIR: {$data['pair']}");
 
             $this->table(
-                ['EXCHANGE', 'BID', 'ASK'],
-                array_map(
-                    fn ($q) => [$q['exchange'], $q['bid'], $q['ask']],
-                    $result['quotes']
-                )
+                ['TYPE', 'EXCHANGE', 'PRICE'],
+                [
+                    ['BUY (MIN ASK)', $data['buy']['exchange'], number_format($data['buy']['price'], 2)],
+                    ['SELL (MAX BID)', $data['sell']['exchange'], number_format($data['sell']['price'], 2)],
+                ]
             );
-        }
 
-        return self::SUCCESS;
-    }
+            if (!empty($data['quotes'])) {
+                $this->line('All quotes:');
 
-    /**
-     * Normalize pair.
-     *
-     * user for unification pairs params.
-     *
-     * @param string $input
-     * @return string
-     */
-    private function normalizePair(string $input): string
-    {
-        $s = strtoupper(trim($input));
-        $s = str_replace(['-', '_', ' '], '/', $s);
-
-        if (str_contains($s, '/')) {
-            $parts = array_values(array_filter(explode('/', $s)));
-
-            if (count($parts) >= 2) {
-                return $parts[0] . '/' . $parts[1];
+                $this->table(
+                    ['EXCHANGE', 'BID', 'ASK'],
+                    array_map(
+                        fn ($q) => [
+                            $q['exchange'],
+                            number_format($q['bid'], 2),
+                            number_format($q['ask'], 2),
+                        ],
+                        $data['quotes']
+                    )
+                );
             }
 
-            return $s;
+            return self::SUCCESS;
+        } catch (PairNotFoundException $e) {
+            $this->error($e->getMessage());
+            $this->line('Examples: BTC/USDT, ETH/USDT, SOL/USDT');
+
+            return self::FAILURE;
+        } catch (InsufficientQuotesException $e) {
+            $this->error($e->getMessage());
+
+            return self::FAILURE;
+        } catch (\Throwable $e) {
+            $this->error('An error occurred: ' . $e->getMessage());
+
+            return self::FAILURE;
         }
-
-        $quotes = ['USDT','USDC','BUSD','FDUSD','BTC','ETH','BNB','EUR','TRY','BRL','UAH','GBP','JPY','AUD','RUB'];
-
-        foreach ($quotes as $q) {
-            if (str_ends_with($s, $q) && strlen($s) > strlen($q)) {
-                $base = substr($s, 0, -strlen($q));
-
-                return $base . '/' . $q;
-            }
-        }
-
-        return $s;
     }
 }
